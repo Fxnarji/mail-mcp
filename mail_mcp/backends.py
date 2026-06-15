@@ -284,10 +284,9 @@ class HimalayaBackend:
         cmd = [self.bin]
         if self.account:
             cmd += ["--account", self.account]
-        cmd += list(args)
         if want_json:
-            cmd += ["--output", "json"]  # if `message read` ignores this on your
-                                         # build, swap to the read-specific --json
+            cmd += ["--json"]  # himalaya v2 global flag (v1's `--output json` is gone)
+        cmd += list(args)
         proc = subprocess.run(cmd, input=stdin, capture_output=True,
                               text=True, timeout=self.timeout)
         if proc.returncode != 0:
@@ -392,12 +391,25 @@ class HimalayaBackend:
 
     @classmethod
     def _envelope_to_message(cls, env, folder: str) -> Message:
+        # himalaya v2 flags are objects: {"raw": "\\Seen", "iana": "seen"}
         flags = env.get("flags") or []
-        seen = (any(str(f).lower().lstrip("\\") == "seen" for f in flags)
-                if isinstance(flags, list) else False)
-        frm = env.get("from") or {}
-        sender = ((frm.get("name") or frm.get("addr") or frm.get("address") or "")
-                  if isinstance(frm, dict) else str(frm))
+
+        def _is_seen(f):
+            if isinstance(f, dict):
+                f = f.get("iana") or f.get("raw") or ""
+            return str(f).lower().lstrip("\\") == "seen"
+
+        seen = any(_is_seen(f) for f in flags) if isinstance(flags, list) else False
+        # himalaya v2 `from` is a list of {"name", "email"} objects
+        frm = env.get("from")
+        sender = ""
+        if isinstance(frm, list) and frm:
+            e0 = frm[0]
+            sender = ((e0.get("name") or e0.get("email") or e0.get("address") or "")
+                      if isinstance(e0, dict) else str(e0))
+        elif isinstance(frm, dict):
+            sender = (frm.get("name") or frm.get("email")
+                      or frm.get("addr") or frm.get("address") or "")
         return Message(
             id=f"{folder}:{env.get('id')}", folder=folder, sender=sender,
             subject=env.get("subject") or "", date=str(env.get("date") or ""),
@@ -406,9 +418,9 @@ class HimalayaBackend:
 
     # -- MailBackend interface --------------------------------------------
     def list_folders(self) -> list[str]:
-        data = self._run(["folder", "list"]) or []
-        if isinstance(data, dict):                 # some builds wrap the array
-            data = data.get("folders") or data.get("data") or []
+        data = self._run(["mailbox", "list"]) or []
+        if isinstance(data, dict):                 # v2 wraps the array
+            data = data.get("mailboxes") or data.get("folders") or data.get("data") or []
         names = []
         for f in data:
             n = (f.get("name") or f.get("folder") or "") if isinstance(f, dict) else str(f)
@@ -417,7 +429,7 @@ class HimalayaBackend:
         return names
 
     def list_messages(self, folder: str = "INBOX", limit: int = 20) -> list[Message]:
-        data = self._run(["envelope", "list", "--folder", folder,
+        data = self._run(["envelope", "list", "-m", folder,
                           "--page-size", str(limit)]) or []
         if isinstance(data, dict):
             data = data.get("envelopes") or data.get("data") or []
@@ -425,13 +437,14 @@ class HimalayaBackend:
 
     def get_message(self, message_id: str) -> Message:
         folder, hid = self._split_id(message_id)
-        data = self._run(["message", "read", hid, "--folder", folder])
+        data = self._run(["message", "read", hid, "-m", folder])
         return self._read_to_message(data, message_id, folder)
 
     def move_message(self, message_id: str, dest_folder: str) -> dict:
         _guard_dest(dest_folder)
         folder, hid = self._split_id(message_id)
-        self._run(["message", "move", hid, dest_folder, "--folder", folder],
+        # himalaya v2: `message move --from <src> --to <dest> <ID>...`
+        self._run(["message", "move", "--from", folder, "--to", dest_folder, hid],
                   want_json=False)
         return {"status": "moved", "id": message_id, "from": folder, "to": dest_folder}
 
@@ -448,7 +461,9 @@ class HimalayaBackend:
         return {"status": "draft_created", "folder": self.drafts_folder,
                 "to": to, "subject": subject}
     
-    _ALLOWED_FLAGS = {"important"}
+    # himalaya v2 accepts: seen, answered, flagged, draft. "flagged" is the
+    # standard \Flagged attention marker used by flag_message/unflag_message.
+    _ALLOWED_FLAGS = {"flagged"}
  
     def _set_flag(self, message_id: str, flag: str, *, add: bool) -> dict:
         flag = flag.strip().lower().lstrip("\\")
@@ -462,7 +477,7 @@ class HimalayaBackend:
         # himalaya 2.x: `flag add|remove <id> --flag <name>`. We pass --folder
         # because ids are folder-relative (same as read/move). If your build
         # rejects --folder here, check `himalaya flag add --help` for placement.
-        self._run(["flag", verb, hid, "--flag", flag, "--folder", folder],
+        self._run(["flag", verb, hid, "--flag", flag, "-m", folder],
                   want_json=False)
         return {"status": f"flag_{verb}", "id": message_id, "flag": flag}
  
@@ -484,9 +499,7 @@ class HimalayaBackend:
         msg.set_content(body)
         # himalaya 2.x: `message add -m <folder> --flag draft` reads the raw
         # message from stdin and appends it as a draft. No SMTP send occurs.
-        self._run(["message", "add", "-m", "Zusammenfassungen", "--flag", "draft"],
+        self._run(["message", "add", "-m", "Zusammenfassung", "--flag", "draft"],
                   want_json=False, stdin=msg.as_string())
-        return {"status": "summary created", "folder": "Zusammenfassungen",
+        return {"status": "summary created", "folder": "Zusammenfassung",
                 "to": "Bob", "subject": "Zusammenfassung"}
-    
-
