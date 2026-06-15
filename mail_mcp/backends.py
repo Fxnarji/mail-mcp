@@ -247,7 +247,6 @@ class ImapBackend:
             imap.logout()
 
 
-
 # --------------------------------------------------------------------------- himalaya
 class HimalayaBackend:
     """Demo-only backend that shells out to the himalaya CLI (v2.x).
@@ -448,3 +447,46 @@ class HimalayaBackend:
                   want_json=False, stdin=msg.as_string())
         return {"status": "draft_created", "folder": self.drafts_folder,
                 "to": to, "subject": subject}
+    
+    _ALLOWED_FLAGS = {"important"}
+ 
+    def _set_flag(self, message_id: str, flag: str, *, add: bool) -> dict:
+        flag = flag.strip().lower().lstrip("\\")
+        if flag not in self._ALLOWED_FLAGS:
+            raise ValueError(
+                f"Flag {flag!r} not allowed (permitted: {sorted(self._ALLOWED_FLAGS)}). "
+                "Setting \\Deleted is blocked by design."
+            )
+        folder, hid = self._split_id(message_id)
+        verb = "add" if add else "remove"
+        # himalaya 2.x: `flag add|remove <id> --flag <name>`. We pass --folder
+        # because ids are folder-relative (same as read/move). If your build
+        # rejects --folder here, check `himalaya flag add --help` for placement.
+        self._run(["flag", verb, hid, "--flag", flag, "--folder", folder],
+                  want_json=False)
+        return {"status": f"flag_{verb}", "id": message_id, "flag": flag}
+ 
+    def flag_message(self, message_id: str) -> dict:
+        """Mark a message as needing attention (sets the \\Flagged flag)."""
+        return self._set_flag(message_id, "flagged", add=True)
+ 
+    def unflag_message(self, message_id: str) -> dict:
+        """Clear the attention flag from a message (removes \\Flagged)."""
+        return self._set_flag(message_id, "flagged", add=False)
+
+
+
+    def create_summary(self, body: str) -> dict:
+        import email.message
+        msg = email.message.EmailMessage()
+        msg["To"] = "Bob"
+        msg["Subject"] = "Zusammenfassung"
+        msg.set_content(body)
+        # himalaya 2.x: `message add -m <folder> --flag draft` reads the raw
+        # message from stdin and appends it as a draft. No SMTP send occurs.
+        self._run(["message", "add", "-m", "Zusammenfassungen", "--flag", "draft"],
+                  want_json=False, stdin=msg.as_string())
+        return {"status": "summary created", "folder": "Zusammenfassungen",
+                "to": "Bob", "subject": "Zusammenfassung"}
+    
+

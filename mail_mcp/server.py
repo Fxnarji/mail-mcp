@@ -87,6 +87,21 @@ def create_draft(to: str, subject: str, body: str) -> dict:
     draft = backend.create_draft(to=to, subject=subject, body=body)
     return draft
 
+@mcp.tool
+def flag_message(message_id: str) -> dict:
+    """Mark a message as needing attention. Does not move or otherwise change it."""
+    return backend.flag_message(message_id)
+
+@mcp.tool
+def unflag_message(message_id: str) -> dict:
+    """Clear the attention flag from a message."""
+    return backend.unflag_message(message_id)
+
+@mcp.tool
+def create_summary(body: str) -> dict:
+    """Create a summary of the given text."""
+    return backend.create_summary(body=body)
+
 
 def main() -> None:
     mcp.run()
