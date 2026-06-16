@@ -76,6 +76,8 @@ def move_message(message_id: str, dest_folder: str) -> dict:
 
     Cannot move messages into Trash / Deleted Items / Junk -- those
     destinations are blocked by design.
+
+    moving messages into non-existing folders will create the folder
     """
     result = backend.move_message(message_id, dest_folder)
     return result
