@@ -11,12 +11,14 @@ Which surface an agent sees is decided by the client config (hermes
 from __future__ import annotations
 
 import json
+import os
 import re
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import SamplingMessage, TextContent
 
 from .backend import Backend, FakeBackend, Mail
+from .backend_imap import IMAPBackend
 
 mcp = FastMCP("mail")
 
@@ -50,6 +52,40 @@ def _serve_next() -> str:
         "Sort it: call sort_mail with a folder name (existing or new; 'INBOX' keeps it here) "
         "and optionally a reply text to save as a draft."
     )
+
+
+# --------------------------------------------------------------------------
+# Account access
+# --------------------------------------------------------------------------
+
+@mcp.tool()
+def login(host: str, user: str, password: str, port: int = 993) -> str:
+    """Log into a real IMAP mail account (TLS). Until this is called, all mail
+    tools operate on a built-in TEST mailbox with fake mails."""
+    global backend, _current_uid
+    try:
+        candidate = IMAPBackend(host=host, user=user, password=password, port=port)
+        folders = candidate.list_folders()
+    except Exception as exc:
+        return f"Login failed: {exc}"
+    backend = candidate
+    _current_uid = None
+    return (
+        f"Logged in as {user} on {host}. {len(folders)} folders: {', '.join(folders)}.\n"
+        "All mail tools now operate on this account."
+    )
+
+
+def _login_from_env() -> None:
+    """Auto-login if credentials come via env (hermes config `env:` block)."""
+    global backend
+    host, user = os.environ.get("MAILMCP_HOST"), os.environ.get("MAILMCP_USER")
+    password = os.environ.get("MAILMCP_PASSWORD")
+    if host and user and password:
+        backend = IMAPBackend(
+            host=host, user=user, password=password,
+            port=int(os.environ.get("MAILMCP_PORT", "993")),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -154,6 +190,8 @@ async def sort_inbox(ctx: Context) -> str:
         report.append(_apply_decision(mail, folder, reply))
     if not report:
         return "Inbox clear. Nothing to sort."
+    if limit == 0 and backend.next_unprocessed() is not None:
+        report.append("NOT DONE: more unsorted mail remains -- call sort_inbox again to continue.")
     return "Inbox sorted:\n" + "\n".join(f"- {line}" for line in report)
 
 
@@ -246,6 +284,7 @@ def save_draft(body: str, reply_to_id: str | None = None, to: str | None = None,
 
 
 def main() -> None:
+    _login_from_env()
     mcp.run()
 
 

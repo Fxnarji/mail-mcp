@@ -20,6 +20,7 @@ class Mail:
     body: str
     flags: set[str] = field(default_factory=set)
     processed: bool = False  # spike stand-in for the custom IMAP keyword
+    message_id: str = ""  # RFC Message-ID, used for reply threading
 
 
 class Backend(Protocol):
