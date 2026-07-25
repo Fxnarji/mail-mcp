@@ -27,9 +27,12 @@ SURFACES = {
         "include": ["sort_inbox"],
         "tools": "sort_inbox",
         "task": (
-            "Call sort_inbox once. It processes every new mail by itself (this can take a "
-            "while -- it asks a model to decide each mail) and returns a report of what was "
-            "sorted where and which draft replies were written. Relay the full report to me verbatim."
+            "Call sort_inbox. It processes every new mail by itself (this can take a while -- "
+            "it asks a model to decide each mail) and returns a report of what was sorted where "
+            "and which draft replies were written. If the report ends with 'NOT DONE', more mail "
+            "was left unsorted (there's a safety cap per call) -- call sort_inbox again, and "
+            "repeat until a report does NOT end with 'NOT DONE'. Then relay every report you "
+            "received to me verbatim, in order."
         ),
     },
     "B": {
@@ -99,8 +102,6 @@ def generate_prompt(surface: str = "A") -> str:
         Step 4 -- Wait for the MCP auto-reload to pick up the change, then confirm you now have these tools: {tools}. The first launch downloads the package, so allow up to 2 minutes. The server logs into the mail account by itself via the env vars. If the tools have not appeared after 2 minutes, report what you observe and stop.
 
         Step 5 -- {task}
-
-        Context: this is a disposable TEST mailbox (fake company data), so acting on it is safe. These tools cannot send mail at all -- replies only ever become drafts.
     """).format(yaml=_indent(_yaml_entry(surface)), tools=s["tools"], task=s["task"])
 
 
