@@ -312,20 +312,28 @@ def save_draft(body: str, reply_to_id: str | None = None, to: str | None = None,
     return f"Draft saved (id {uid})."
 
 
-class _BearerAuthMiddleware:
-    """Rejects any request without a matching bearer token.
+@mcp.custom_route("/health", methods=["GET"])
+async def _health(_request):
+    from starlette.responses import PlainTextResponse
+    return PlainTextResponse("ok")
 
-    A tunnel (e.g. Newt) only forwards the port -- it doesn't check who's
-    connecting, so this is the only thing standing between the internet and
-    the mailbox once MAILMCP_TRANSPORT=http is set.
+
+class _BearerAuthMiddleware:
+    """Rejects requests to the MCP endpoint without a matching bearer token.
+
+    Only guards `protected_path` (the actual mail-mcp endpoint) -- everything
+    else, notably /health, passes through unauthenticated so a reverse-proxy
+    liveness check (e.g. Pangolin/Traefik probing the backend before routing
+    real traffic to it) doesn't itself get rejected and mark the server down.
     """
 
-    def __init__(self, app, token: str) -> None:
+    def __init__(self, app, token: str, protected_path: str) -> None:
         self.app = app
         self.token = token
+        self.protected_path = protected_path
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] != "http" or scope["path"] != self.protected_path:
             return await self.app(scope, receive, send)
         headers = dict(scope["headers"])
         auth = headers.get(b"authorization", b"").decode()
@@ -352,7 +360,7 @@ def main() -> None:
     import uvicorn
 
     app = mcp.streamable_http_app()
-    app.add_middleware(_BearerAuthMiddleware, token=token)
+    app.add_middleware(_BearerAuthMiddleware, token=token, protected_path=mcp.settings.streamable_http_path)
     uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port)
 
 
