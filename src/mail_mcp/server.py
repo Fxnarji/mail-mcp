@@ -338,8 +338,16 @@ class _BearerAuthMiddleware:
         headers = dict(scope["headers"])
         auth = headers.get(b"authorization", b"").decode()
         if auth != f"Bearer {self.token}":
-            from starlette.responses import PlainTextResponse
-            response = PlainTextResponse("Unauthorized", status_code=401)
+            # A JSON-RPC-shaped body (not plain text) so an unauthenticated
+            # preflight probe -- one that hasn't attached the configured auth
+            # header yet -- still sees a valid-looking MCP content type
+            # instead of failing fast on a bare "Unauthorized" string.
+            from starlette.responses import JSONResponse
+            response = JSONResponse(
+                {"jsonrpc": "2.0", "id": "server-error",
+                 "error": {"code": -32600, "message": "Unauthorized"}},
+                status_code=401,
+            )
             return await response(scope, receive, send)
         return await self.app(scope, receive, send)
 
