@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import SamplingMessage, TextContent
@@ -21,7 +22,11 @@ from mcp.types import SamplingMessage, TextContent
 from .backend import Backend, FakeBackend, Mail
 from .backend_imap import IMAPBackend
 
-mcp = FastMCP("mail")
+mcp = FastMCP(
+    "mail",
+    host=os.environ.get("MAILMCP_BIND_HOST", "127.0.0.1"),
+    port=int(os.environ.get("MAILMCP_BIND_PORT", "8000")),
+)
 
 backend: Backend = FakeBackend()
 
@@ -307,9 +312,48 @@ def save_draft(body: str, reply_to_id: str | None = None, to: str | None = None,
     return f"Draft saved (id {uid})."
 
 
+class _BearerAuthMiddleware:
+    """Rejects any request without a matching bearer token.
+
+    A tunnel (e.g. Newt) only forwards the port -- it doesn't check who's
+    connecting, so this is the only thing standing between the internet and
+    the mailbox once MAILMCP_TRANSPORT=http is set.
+    """
+
+    def __init__(self, app, token: str) -> None:
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope["headers"])
+        auth = headers.get(b"authorization", b"").decode()
+        if auth != f"Bearer {self.token}":
+            from starlette.responses import PlainTextResponse
+            response = PlainTextResponse("Unauthorized", status_code=401)
+            return await response(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
 def main() -> None:
     _login_from_env()
-    mcp.run()
+    transport = os.environ.get("MAILMCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp.run()
+        return
+    if transport != "http":
+        sys.exit(f"MAILMCP_TRANSPORT must be 'stdio' or 'http', got {transport!r}.")
+
+    token = os.environ.get("MAILMCP_AUTH_TOKEN")
+    if not token:
+        sys.exit("MAILMCP_AUTH_TOKEN must be set to expose mail-mcp over MAILMCP_TRANSPORT=http.")
+
+    import uvicorn
+
+    app = mcp.streamable_http_app()
+    app.add_middleware(_BearerAuthMiddleware, token=token)
+    uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port)
 
 
 if __name__ == "__main__":
