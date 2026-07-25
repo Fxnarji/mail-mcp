@@ -10,6 +10,7 @@ Which surface an agent sees is decided by the client config (hermes
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -146,7 +147,7 @@ def _apply_decision(mail: Mail, folder: str, response: str | None) -> str:
 # --------------------------------------------------------------------------
 
 _SORT_PROMPT = """You are sorting one email into a folder.
-
+{policy}
 {mail}
 
 Existing folders: {folders}
@@ -157,27 +158,50 @@ Answer with ONLY a JSON object, no other text:
 Only write a reply if the mail is personally addressed and clearly expects an answer."""
 
 
+async def _sample_with_retry(
+    ctx: Context, prompt: str, max_tokens: int = 400, retries: int = 5, backoff: float = 10.0
+):
+    """hermes caps sampling at a low requests/minute by default; a 25-mail
+    inbox routinely exceeds it mid-run. Rate-limit errors are transient, so
+    back off and retry instead of aborting the whole sort over one mail."""
+    for attempt in range(retries + 1):
+        try:
+            return await ctx.session.create_message(
+                messages=[SamplingMessage(role="user", content=TextContent(type="text", text=prompt))],
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            if attempt < retries and "rate limit" in str(exc).lower():
+                await asyncio.sleep(backoff)
+                continue
+            raise
+
+
 @mcp.tool()
-async def sort_inbox(ctx: Context) -> str:
+async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
     """Sort all new mail in the inbox into folders automatically and draft
     replies where needed. Call this once; it processes every new mail and
-    returns a summary report."""
+    returns a summary report.
+
+    instructions: optional sorting policy -- your folder taxonomy, what
+    counts as noise/phishing/personal/etc and where each should go, reply
+    tone. Every per-mail decision follows it. Without it, folder and reply
+    choices are the model's best generic guess."""
     report: list[str] = []
     limit = 25  # spike guard: never loop unbounded
+    policy_block = f"\nSorting policy (follow this strictly):\n{instructions.strip()}\n" if instructions and instructions.strip() else ""
     while limit > 0:
         limit -= 1
         mail = backend.next_unprocessed()
         if mail is None:
             break
         prompt = _SORT_PROMPT.format(
+            policy=policy_block,
             mail=_format_mail(mail),
             folders=", ".join(backend.list_folders()),
         )
         try:
-            result = await ctx.session.create_message(
-                messages=[SamplingMessage(role="user", content=TextContent(type="text", text=prompt))],
-                max_tokens=400,
-            )
+            result = await _sample_with_retry(ctx, prompt)
         except Exception as exc:
             report.append(f"STOPPED: sampling unavailable ({exc}). Use next_mail/sort_mail instead.")
             break
