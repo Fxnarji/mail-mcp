@@ -352,7 +352,33 @@ class _BearerAuthMiddleware:
         return await self.app(scope, receive, send)
 
 
+# Mirrors the surface split documented in README.md. Lets the server itself
+# restrict which tools it registers (via MAILMCP_SURFACE) instead of relying
+# on the client's tools.include config -- useful when only the server side
+# is easy to redeploy/reconfigure (e.g. no access to edit the client config).
+_SURFACE_TOOLS = {
+    "A": {"sort_inbox"},
+    "B": {"next_mail", "sort_mail"},
+    "C": {"login", "list_folders", "list_mails", "read_mail", "move_mails",
+          "flag_mails", "delete_mails", "search_mails", "save_draft"},
+}
+
+
+def _apply_surface_filter() -> None:
+    surface = os.environ.get("MAILMCP_SURFACE")
+    if not surface:
+        return  # unfiltered: every tool registered, as before
+    surface = surface.upper()
+    if surface not in _SURFACE_TOOLS:
+        sys.exit(f"MAILMCP_SURFACE must be one of {sorted(_SURFACE_TOOLS)}, got {surface!r}.")
+    keep = _SURFACE_TOOLS[surface]
+    for tool in asyncio.run(mcp.list_tools()):
+        if tool.name not in keep:
+            mcp.remove_tool(tool.name)
+
+
 def main() -> None:
+    _apply_surface_filter()
     _login_from_env()
     transport = os.environ.get("MAILMCP_TRANSPORT", "stdio")
     if transport == "stdio":
