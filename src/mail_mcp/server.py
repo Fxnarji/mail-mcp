@@ -24,7 +24,7 @@ from .backend_imap import IMAPBackend
 
 mcp = FastMCP(
     "mail",
-    host=os.environ.get("MAILMCP_BIND_HOST", "127.0.0.1"),
+    host=os.environ.get("MAILMCP_BIND_HOST", "0.0.0.0"),
     port=int(os.environ.get("MAILMCP_BIND_PORT", "8000")),
 )
 
