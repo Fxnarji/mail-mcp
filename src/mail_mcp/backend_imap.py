@@ -9,11 +9,13 @@ mail into a folder moves it (flags travel along); keeping it in INBOX marks
 it \\Seen + MailMCPProcessed so it is never fed to the agent again.
 
 Dead connections (dropped by the server after idle) are retried once via
-_reconnecting. Known spike limitation: no modified-UTF7 folder names.
+_reconnecting. Non-ASCII folder names (e.g. German "Quarantäne") are wire-encoded
+as modified UTF-7 per RFC 3501 5.1.3 -- imaplib itself only ever sees ASCII.
 """
 
 from __future__ import annotations
 
+import base64
 import email
 import email.message
 import email.utils
@@ -35,8 +37,59 @@ _DRAFTS_NAMES = ("drafts", "draft", "inbox.drafts")
 _TRASH_NAMES = ("trash", "deleted items", "deleted", "junk", "inbox.trash")
 
 
+def _imap_utf7_encode(name: str) -> str:
+    """Unicode mailbox name -> ASCII wire form (modified UTF-7, RFC 3501 5.1.3)."""
+    out: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if not buf:
+            return
+        raw = "".join(buf).encode("utf-16-be")
+        b64 = base64.b64encode(raw).decode("ascii").rstrip("=").replace("/", ",")
+        out.append("&" + b64 + "-")
+        buf.clear()
+
+    for ch in name:
+        if ch == "&":
+            flush()
+            out.append("&-")
+        elif " " <= ch <= "~":  # printable ASCII passes through untouched
+            flush()
+            out.append(ch)
+        else:
+            buf.append(ch)
+    flush()
+    return "".join(out)
+
+
+def _imap_utf7_decode(wire: str) -> str:
+    """ASCII wire form (modified UTF-7) -> Unicode mailbox name."""
+    out: list[str] = []
+    i, n = 0, len(wire)
+    while i < n:
+        ch = wire[i]
+        if ch != "&":
+            out.append(ch)
+            i += 1
+            continue
+        end = wire.find("-", i + 1)
+        if end == -1:
+            end = n
+        chunk = wire[i + 1:end]
+        if chunk == "":
+            out.append("&")
+        else:
+            b64 = chunk.replace(",", "/")
+            b64 += "=" * (-len(b64) % 4)
+            out.append(base64.b64decode(b64).decode("utf-16-be"))
+        i = end + 1
+    return "".join(out)
+
+
 def _quote(name: str) -> str:
-    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    wire = _imap_utf7_encode(name)
+    return '"' + wire.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _decode_hdr(value: str | None) -> str:
@@ -200,7 +253,7 @@ class IMAPBackend:
                 name = m.group("name").strip()
                 if name.startswith(b'"') and name.endswith(b'"'):
                     name = name[1:-1].replace(b'\\"', b'"').replace(b"\\\\", b"\\")
-                folders.append(name.decode("utf-8", errors="replace"))
+                folders.append(_imap_utf7_decode(name.decode("ascii", errors="replace")))
             # stable order, INBOX first
             folders.sort(key=lambda f: (f.upper() != "INBOX", f.casefold()))
             self._folders_cache = folders
