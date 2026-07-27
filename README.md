@@ -18,6 +18,8 @@ Cross-cutting: `login(host, user, password, port=993)` switches from the fake ma
 
 Folder names are matched case-insensitively and loosely (`newsletter` → `Newsletters`); unmatched names create a new folder. `sort_mail` returns the next mail automatically, so sorting is one tool call per mail.
 
+Every sort decision (folder, model used when known, reply text) is logged. Console logging (stderr) is on by default; set `MAILMCP_LOG_CONSOLE=0` to disable it. Set `MAILMCP_LOG_FILE` to a path to also (or instead) log to a file.
+
 ## Install into hermes
 
 Requires `uv` on the machine running hermes. In `~/.hermes/config.yaml`:

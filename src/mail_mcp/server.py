@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -27,6 +28,29 @@ mcp = FastMCP(
     host=os.environ.get("MAILMCP_BIND_HOST", "0.0.0.0"),
     port=int(os.environ.get("MAILMCP_BIND_PORT", "8000")),
 )
+
+logger = logging.getLogger("mail_mcp")
+
+
+def _setup_logging() -> None:
+    """Console (stderr -- stdout is the stdio transport's JSON-RPC channel)
+    and/or file logging of sort decisions, configured via env vars:
+    MAILMCP_LOG_CONSOLE (default on), MAILMCP_LOG_FILE (path, off by default)."""
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+
+    if os.environ.get("MAILMCP_LOG_CONSOLE", "1").lower() not in ("0", "false", "no"):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(fmt)
+        logger.addHandler(handler)
+
+    log_file = os.environ.get("MAILMCP_LOG_FILE")
+    if log_file:
+        handler = logging.FileHandler(log_file, encoding="utf-8")
+        handler.setFormatter(fmt)
+        logger.addHandler(handler)
+
 
 backend: Backend = FakeBackend()
 
@@ -132,7 +156,7 @@ def sort_mail(folder: str, response: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def _apply_decision(mail: Mail, folder: str, response: str | None) -> str:
+def _apply_decision(mail: Mail, folder: str, response: str | None, model: str | None = None) -> str:
     resolved, created = backend.resolve_folder(folder)
     parts = []
     if resolved == "INBOX":
@@ -144,6 +168,10 @@ def _apply_decision(mail: Mail, folder: str, response: str | None) -> str:
     if response:
         backend.save_draft(response, reply_to=mail)
         parts.append(f"Draft reply to {mail.sender} saved.")
+    logger.info(
+        "sort mail=%r from=%r folder=%r model=%s reply=%r",
+        mail.subject, mail.sender, resolved, model or "external", response,
+    )
     return " ".join(parts)
 
 
@@ -182,6 +210,17 @@ async def _sample_with_retry(
             raise
 
 
+def _default_sort_policy() -> str | None:
+    """Server-configured fallback policy, read fresh on every call so it can
+    be edited on the box without restarting the server. Takes effect only
+    when the caller doesn't pass its own instructions."""
+    path = os.environ.get("MAILMCP_SORT_POLICY_FILE")
+    if not path:
+        return None
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 @mcp.tool()
 async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
     """Sort all new mail in the inbox into folders automatically and draft
@@ -190,10 +229,13 @@ async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
 
     instructions: optional sorting policy -- your folder taxonomy, what
     counts as noise/phishing/personal/etc and where each should go, reply
-    tone. Every per-mail decision follows it. Without it, folder and reply
+    tone. Every per-mail decision follows it. If omitted, a server-configured
+    default policy is used when one is set; otherwise folder and reply
     choices are the model's best generic guess."""
     report: list[str] = []
     limit = 25  # spike guard: never loop unbounded
+    if not instructions or not instructions.strip():
+        instructions = _default_sort_policy()
     policy_block = f"\nSorting policy (follow this strictly):\n{instructions.strip()}\n" if instructions and instructions.strip() else ""
     while limit > 0:
         limit -= 1
@@ -210,13 +252,15 @@ async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
         except Exception as exc:
             report.append(f"STOPPED: sampling unavailable ({exc}). Use next_mail/sort_mail instead.")
             break
-        decision = _parse_decision(result.content.text if isinstance(result.content, TextContent) else "")
+        raw_reply = result.content.text if isinstance(result.content, TextContent) else ""
+        logger.info("sample mail=%r model=%s response=%r", mail.subject, result.model, raw_reply)
+        decision = _parse_decision(raw_reply)
         if decision is None:
             backend.mark_processed(mail.uid)  # skip rather than loop forever on it
             report.append(f"SKIPPED '{mail.subject}': model answer was not valid JSON.")
             continue
         folder, reply = decision
-        report.append(_apply_decision(mail, folder, reply))
+        report.append(_apply_decision(mail, folder, reply, model=result.model))
     if not report:
         return "Inbox clear. Nothing to sort."
     if limit == 0 and backend.next_unprocessed() is not None:
@@ -378,6 +422,7 @@ def _apply_surface_filter() -> None:
 
 
 def main() -> None:
+    _setup_logging()
     _apply_surface_filter()
     _login_from_env()
     transport = os.environ.get("MAILMCP_TRANSPORT", "stdio")

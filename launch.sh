@@ -15,4 +15,10 @@ export MAILMCP_TRANSPORT=http
 export MAILMCP_SURFACE="$surface"
 export MAILMCP_BIND_PORT="${2:-8123}"
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+policy_file="$script_dir/sort_policy.txt"
+if [[ -f "$policy_file" ]]; then
+    export MAILMCP_SORT_POLICY_FILE="$policy_file"
+fi
+
 exec uv run mail-mcp
