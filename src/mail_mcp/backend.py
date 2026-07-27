@@ -25,6 +25,7 @@ class Mail:
 
 class Backend(Protocol):
     def list_folders(self) -> list[str]: ...
+    def drafts_folder(self) -> str: ...
     def list_mails(self, folder: str) -> list[Mail]: ...
     def get_mail(self, uid: str) -> Mail | None: ...
     def next_unprocessed(self) -> Mail | None: ...
@@ -67,6 +68,9 @@ class FakeBackend:
     # --- reading -------------------------------------------------------
     def list_folders(self) -> list[str]:
         return list(self._folders)
+
+    def drafts_folder(self) -> str:
+        return self.SPECIAL["drafts"]
 
     def list_mails(self, folder: str) -> list[Mail]:
         resolved, _ = self.resolve_folder(folder)

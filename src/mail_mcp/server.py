@@ -248,10 +248,11 @@ async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
         mail = backend.next_unprocessed()
         if mail is None:
             break
+        drafts = backend.drafts_folder()
         prompt = _SORT_PROMPT.format(
             policy=policy_block,
             mail=_format_mail(mail),
-            folders=", ".join(backend.list_folders()),
+            folders=", ".join(f for f in backend.list_folders() if f != drafts),
         )
         try:
             result = await _sample_with_retry(ctx, prompt)

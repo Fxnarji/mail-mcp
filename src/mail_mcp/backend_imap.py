@@ -259,6 +259,9 @@ class IMAPBackend:
             self._folders_cache = folders
             return folders
 
+    def drafts_folder(self) -> str:
+        return self._special_folder(_DRAFTS_NAMES, "Drafts")
+
     @_reconnecting
     def list_mails(self, folder: str) -> list[Mail]:
         with self._lock:
