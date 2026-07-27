@@ -195,7 +195,8 @@ async def _sample_with_retry(
     ctx: Context, prompt: str, max_tokens: int = 400, retries: int = 5, backoff: float = 10.0
 ):
     """hermes caps sampling at a low requests/minute by default; a 25-mail
-    inbox routinely exceeds it mid-run. Rate-limit errors are transient, so
+    inbox routinely exceeds it mid-run. Rate-limit and timeout errors are
+    both transient (client-side throttling / a slow model response), so
     back off and retry instead of aborting the whole sort over one mail."""
     for attempt in range(retries + 1):
         try:
@@ -204,7 +205,9 @@ async def _sample_with_retry(
                 max_tokens=max_tokens,
             )
         except Exception as exc:
-            if attempt < retries and "rate limit" in str(exc).lower():
+            msg = str(exc).lower()
+            if attempt < retries and ("rate limit" in msg or "timed out" in msg or "timeout" in msg):
+                logger.info("sample retry %d/%d after error: %s", attempt + 1, retries, exc)
                 await asyncio.sleep(backoff)
                 continue
             raise
