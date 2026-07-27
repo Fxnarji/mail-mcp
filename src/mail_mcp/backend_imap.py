@@ -292,6 +292,14 @@ class IMAPBackend:
             return self._fetch_mail("INBOX", uids[0].decode())
 
     @_reconnecting
+    def count_unprocessed(self) -> int:
+        with self._lock:
+            self._select("INBOX")
+            data = self._uid("SEARCH", "UNSEEN", "UNKEYWORD", PROCESSED_KEYWORD)
+            uids = data[0].split() if data and data[0] else []
+            return len(uids)
+
+    @_reconnecting
     def mark_processed(self, uid: str) -> None:
         with self._lock:
             key = self._handles.get(uid)

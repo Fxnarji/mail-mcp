@@ -234,9 +234,12 @@ async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
     choices are the model's best generic guess."""
     report: list[str] = []
     limit = 25  # spike guard: never loop unbounded
+    total = backend.count_unprocessed()
+    done = 0
     if not instructions or not instructions.strip():
         instructions = _default_sort_policy()
     policy_block = f"\nSorting policy (follow this strictly):\n{instructions.strip()}\n" if instructions and instructions.strip() else ""
+    logger.info("sort_inbox start total=%d limit=%d", total, limit)
     while limit > 0:
         limit -= 1
         mail = backend.next_unprocessed()
@@ -251,6 +254,7 @@ async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
             result = await _sample_with_retry(ctx, prompt)
         except Exception as exc:
             report.append(f"STOPPED: sampling unavailable ({exc}). Use next_mail/sort_mail instead.")
+            logger.info("sort_inbox stopped %d/%d: sampling unavailable (%s)", done, total, exc)
             break
         raw_reply = result.content.text if isinstance(result.content, TextContent) else ""
         logger.info("sample mail=%r model=%s response=%r", mail.subject, result.model, raw_reply)
@@ -258,13 +262,21 @@ async def sort_inbox(ctx: Context, instructions: str | None = None) -> str:
         if decision is None:
             backend.mark_processed(mail.uid)  # skip rather than loop forever on it
             report.append(f"SKIPPED '{mail.subject}': model answer was not valid JSON.")
+            done += 1
+            logger.info("sort_inbox progress %d/%d (skipped, bad JSON)", done, total)
             continue
         folder, reply = decision
         report.append(_apply_decision(mail, folder, reply, model=result.model))
+        done += 1
+        logger.info("sort_inbox progress %d/%d", done, total)
     if not report:
+        logger.info("sort_inbox done 0/%d: nothing to sort", total)
         return "Inbox clear. Nothing to sort."
     if limit == 0 and backend.next_unprocessed() is not None:
         report.append("NOT DONE: more unsorted mail remains -- call sort_inbox again to continue.")
+        logger.info("sort_inbox hit limit at %d/%d", done, total)
+    else:
+        logger.info("sort_inbox done %d/%d", done, total)
     return "Inbox sorted:\n" + "\n".join(f"- {line}" for line in report)
 
 
